@@ -121,45 +121,10 @@ func (s *Solver) solvePoWWithNode(salt, target string) (string, error) {
 
 	// Write runner script
 	runnerJS := `
-// Comprehensive browser polyfills for wasm-bindgen / Rust Wasm
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const { webcrypto } = require('crypto');
-
-if (typeof globalThis.window === 'undefined') globalThis.window = globalThis;
-if (typeof globalThis.document === 'undefined') {
-    globalThis.document = {
-        createElement: () => ({ setAttribute: () => {}, appendChild: () => {} }),
-        getElementsByTagName: () => [],
-        getElementById: () => null,
-        cookie: ""
-    };
-}
-if (typeof globalThis.navigator === 'undefined') {
-    globalThis.navigator = {
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
-        platform: "Win32",
-        language: "zh-CN"
-    };
-}
-if (typeof globalThis.crypto === 'undefined') globalThis.crypto = webcrypto;
-if (typeof globalThis.performance === 'undefined') {
-    globalThis.performance = {
-        now: () => Date.now() + Math.random(),
-        timing: { navigationStart: Date.now() }
-    };
-}
-if (typeof globalThis.Math === 'undefined') globalThis.Math = Math;
-
-// Ensure Math functions exist
-if (!Math.random) Math.random = () => Math.floor(Math.random() * 1000) / 1000;
-if (!Math.floor) Math.floor = x => Math.floor(x);
-if (!Math.pow) Math.pow = (x, y) => Math.pow(x, y);
-
-import init, { solve_pow } from './cap_wasm.mjs';
+import { initSync, solve_pow } from './cap_wasm.mjs';
 import { readFileSync } from 'fs';
 
-async function run() {
+function run() {
     const salt = process.argv[2];
     const target = process.argv[3];
     const wasmPath = process.argv[4];
@@ -167,9 +132,10 @@ async function run() {
     const wasmBytes = readFileSync(wasmPath);
     
     try {
-        await init({ module_or_path: wasmBytes });
+        // Use synchronous initialization for reliability
+        initSync({ module: wasmBytes });
     } catch (e) {
-        console.error("Wasm init failed:", e.stack);
+        console.error("Wasm initSync failed:", e.stack);
         process.exit(1);
     }
     
@@ -181,7 +147,7 @@ async function run() {
         process.exit(1);
     }
 }
-run().catch(e => { console.error(e.stack); process.exit(1); });
+run();
 `
 
 	runnerPath := filepath.Join(s.tempDir, "runner.mjs")
