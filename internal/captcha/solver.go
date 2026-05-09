@@ -121,10 +121,40 @@ func (s *Solver) solvePoWWithNode(salt, target string) (string, error) {
 
 	// Write runner script
 	runnerJS := `
-// Polyfill browser globals for wasm-bindgen
-if (typeof globalThis.window === 'undefined') {
-    globalThis.window = globalThis;
+// Comprehensive browser polyfills for wasm-bindgen / Rust Wasm
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const { webcrypto } = require('crypto');
+
+if (typeof globalThis.window === 'undefined') globalThis.window = globalThis;
+if (typeof globalThis.document === 'undefined') {
+    globalThis.document = {
+        createElement: () => ({ setAttribute: () => {}, appendChild: () => {} }),
+        getElementsByTagName: () => [],
+        getElementById: () => null,
+        cookie: ""
+    };
 }
+if (typeof globalThis.navigator === 'undefined') {
+    globalThis.navigator = {
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0",
+        platform: "Win32",
+        language: "zh-CN"
+    };
+}
+if (typeof globalThis.crypto === 'undefined') globalThis.crypto = webcrypto;
+if (typeof globalThis.performance === 'undefined') {
+    globalThis.performance = {
+        now: () => Date.now() + Math.random(),
+        timing: { navigationStart: Date.now() }
+    };
+}
+if (typeof globalThis.Math === 'undefined') globalThis.Math = Math;
+
+// Ensure Math functions exist
+if (!Math.random) Math.random = () => Math.floor(Math.random() * 1000) / 1000;
+if (!Math.floor) Math.floor = x => Math.floor(x);
+if (!Math.pow) Math.pow = (x, y) => Math.pow(x, y);
 
 import init, { solve_pow } from './cap_wasm.mjs';
 import { readFileSync } from 'fs';
@@ -136,24 +166,18 @@ async function run() {
     
     const wasmBytes = readFileSync(wasmPath);
     
-    // Try different init signatures to maximize compatibility
     try {
-        await init({ module: wasmBytes });
+        await init({ module_or_path: wasmBytes });
     } catch (e) {
-        // Fallback to object with module_or_path if module key fails
-        try {
-            await init({ module_or_path: wasmBytes });
-        } catch (e2) {
-            console.error("Init failed:", e2.message);
-            process.exit(1);
-        }
+        console.error("Wasm init failed:", e.stack);
+        process.exit(1);
     }
     
     try {
         const result = solve_pow(salt, target);
         console.log(result.toString(16));
     } catch (e) {
-        console.error(e.stack);
+        console.error("solve_pow failed:", e.stack);
         process.exit(1);
     }
 }
