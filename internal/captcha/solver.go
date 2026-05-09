@@ -121,6 +121,11 @@ func (s *Solver) solvePoWWithNode(salt, target string) (string, error) {
 
 	// Write runner script
 	runnerJS := `
+// Polyfill browser globals for wasm-bindgen
+if (typeof globalThis.window === 'undefined') {
+    globalThis.window = globalThis;
+}
+
 import init, { solve_pow } from './cap_wasm.mjs';
 import { readFileSync } from 'fs';
 
@@ -130,13 +135,29 @@ async function run() {
     const wasmPath = process.argv[4];
     
     const wasmBytes = readFileSync(wasmPath);
-    // cap_wasm.mjs expects an object parameter, not raw bytes
-    await init({ module_or_path: wasmBytes }); 
     
-    const result = solve_pow(salt, target);
-    console.log(result.toString(16));
+    // Try different init signatures to maximize compatibility
+    try {
+        await init({ module: wasmBytes });
+    } catch (e) {
+        // Fallback to object with module_or_path if module key fails
+        try {
+            await init({ module_or_path: wasmBytes });
+        } catch (e2) {
+            console.error("Init failed:", e2.message);
+            process.exit(1);
+        }
+    }
+    
+    try {
+        const result = solve_pow(salt, target);
+        console.log(result.toString(16));
+    } catch (e) {
+        console.error(e.stack);
+        process.exit(1);
+    }
 }
-run().catch(e => { console.error(e.message); process.exit(1); });
+run().catch(e => { console.error(e.stack); process.exit(1); });
 `
 
 	runnerPath := filepath.Join(s.tempDir, "runner.mjs")
