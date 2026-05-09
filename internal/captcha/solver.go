@@ -25,24 +25,45 @@ async function run() {
     const target = process.argv[3];
     const wasmPath = process.argv[4];
     const wasmBytes = fs.readFileSync(wasmPath);
-    const imports = { wbg: { __wbindgen_init_externref_table: () => {} } };
+    
+    let exports = null;
+    const imports = {
+        wbg: {
+            __wbindgen_init_externref_table: function() {
+                if (!exports) throw new Error("Instance not ready");
+                const table = exports.__wbindgen_export_0;
+                if (table) {
+                    const t = table.grow(4);
+                    table.set(0, undefined);
+                    table.set(t + 0, undefined);
+                    table.set(t + 1, null);
+                    table.set(t + 2, true);
+                    table.set(t + 3, false);
+                }
+            }
+        }
+    };
+
     const { instance } = await WebAssembly.instantiate(wasmBytes, imports);
-    const wasm = instance.exports;
-    if (wasm.__wbindgen_start) wasm.__wbindgen_start();
+    exports = instance.exports;
+    if (exports.__wbindgen_start) exports.__wbindgen_start();
+
     let WASM_VECTOR_LEN = 0;
+    const mem = new Uint8Array(exports.memory.buffer);
     function passStringToWasm0(str) {
         const len = str.length;
-        let ptr = wasm.__wbindgen_malloc(len, 1);
-        const mem = new Uint8Array(wasm.memory.buffer);
+        let ptr = exports.__wbindgen_malloc(len, 1);
         for (let i = 0; i < len; i++) mem[ptr + i] = str.charCodeAt(i);
         WASM_VECTOR_LEN = len;
         return ptr;
     }
+
     const ptr1 = passStringToWasm0(salt);
     const len1 = WASM_VECTOR_LEN;
     const ptr2 = passStringToWasm0(target);
     const len2 = WASM_VECTOR_LEN;
-    const res = wasm.solve_pow(ptr1, len1, ptr2, len2);
+
+    const res = exports.solve_pow(ptr1, len1, ptr2, len2);
     console.log(BigInt.asUintN(64, res).toString(16));
 }
 run().catch(e => { console.error(e.message); process.exit(1); });`
