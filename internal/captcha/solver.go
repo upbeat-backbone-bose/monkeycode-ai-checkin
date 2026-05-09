@@ -313,7 +313,7 @@ func (s *Solver) redeem(token string, solutions []uint64) (string, error) {
 
 	log.Printf("Redeem response: status=%d, body=%s", resp.StatusCode, string(respBody))
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return "", fmt.Errorf("redeem failed with status %d: %s", resp.StatusCode, string(respBody))
 	}
 
