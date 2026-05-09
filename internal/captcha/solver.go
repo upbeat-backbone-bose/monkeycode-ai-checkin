@@ -2,24 +2,21 @@ package captcha
 
 import (
 	"bytes"
-	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 )
 
-// FNV-1a hash followed by xorshift PRNG to generate hex strings
-// Matches the JS function: function i(u, l) { ... }
+// generateHexSeed implements the JS function i(u, l):
+// FNV-1a hash -> xorshift32 PRNG -> hex string of length l
 func generateHexSeed(input string, length int) string {
-	// FNV-1a hash
-	var c uint32 = 2166136261
+	var c uint32 = 2166136261 // FNV-1a offset basis
 	for i := 0; i < len(input); i++ {
 		c ^= uint32(input[i])
 		c += (c << 1) + (c << 4) + (c << 7) + (c << 8) + (c << 24)
@@ -27,7 +24,6 @@ func generateHexSeed(input string, length int) string {
 
 	var result strings.Builder
 	for result.Len() < length {
-		// xorshift32
 		c ^= c << 13
 		c ^= c >> 17
 		c ^= c << 5
@@ -48,8 +44,8 @@ type ChallengeResponse struct {
 }
 
 type ChallengeParams struct {
-	Count int `json:"c"`
-	SaltLen int `json:"s"`
+	Count     int `json:"c"`
+	SaltLen   int `json:"s"`
 	TargetLen int `json:"d"`
 }
 
@@ -70,11 +66,8 @@ type challengePair struct {
 
 type Solver struct {
 	client       HTTPClient
-	targetURL    string
-	wasmURL      string
 	challengeURL string
 	redeemURL    string
-	tempDir      string
 }
 
 type HTTPClient interface {
@@ -84,12 +77,11 @@ type HTTPClient interface {
 }
 
 func NewSolver(client HTTPClient, targetURL string) *Solver {
+	baseURL := strings.TrimRight(targetURL, "/")
 	return &Solver{
 		client:       client,
-		targetURL:    strings.TrimRight(targetURL, "/"),
-		wasmURL:      targetURL + "/captcha/cap_wasm_bg.wasm",
-		challengeURL: targetURL + "/api/v1/public/captcha/challenge",
-		redeemURL:    targetURL + "/api/v1/public/captcha/redeem",
+		challengeURL: baseURL + "/api/v1/public/captcha/challenge",
+		redeemURL:    baseURL + "/api/v1/public/captcha/redeem",
 	}
 }
 
@@ -103,7 +95,6 @@ func (s *Solver) GetToken() (string, error) {
 	// 2. Parse challenge params
 	var params ChallengeParams
 	if err := json.Unmarshal(challenge.Challenge, &params); err != nil {
-		// Maybe it's already an array
 		return "", fmt.Errorf("failed to parse challenge params: %w", err)
 	}
 
@@ -119,7 +110,7 @@ func (s *Solver) GetToken() (string, error) {
 		}
 	}
 
-	// 4. Solve all challenges in parallel using workers
+	// 4. Solve all challenges in parallel
 	solutions, err := s.solveAll(pairs)
 	if err != nil {
 		return "", fmt.Errorf("failed to solve challenges: %w", err)
@@ -165,62 +156,51 @@ func (s *Solver) fetchChallenge() (*ChallengeResponse, error) {
 	return &result, nil
 }
 
+// solvePow finds a nonce such that:
+// SHA-256(salt + nonce_as_decimal_string)[0:n] == targetBytes[0:n]
+// where n = floor(len(target_hex) / 2)
+//
+// This matches the JS fallback solver in the captcha worker.
+func solvePow(salt, target string) (uint64, error) {
+	// JS uses: const n = Math.floor(target.length / 2)
+	// "ec0" (3 chars) => n = 1 byte; "abcd" (4 chars) => n = 2 bytes
+	n := len(target) / 2
+	if n == 0 {
+		n = 1
+	}
+
+	// Decode target - take first 2*n chars (even length)
+	targetHex := target
+	if len(targetHex)%2 != 0 {
+		targetHex = targetHex[:len(targetHex)-1]
+	}
+	targetBytes, err := hex.DecodeString(targetHex)
+	if err != nil {
+		return 0, fmt.Errorf("decode target %q: %w", target, err)
+	}
+
+	saltBytes := []byte(salt)
+	hasher := sha256.New()
+
+	// Brute-force: try nonce = 0, 1, 2, ...
+	var nonce uint64
+	for nonce = 0; nonce < 10_000_000; nonce++ {
+		nonceStr := fmt.Sprintf("%d", nonce)
+		combined := append(saltBytes, []byte(nonceStr)...)
+
+		hasher.Reset()
+		hasher.Write(combined)
+		digest := hasher.Sum(nil)
+
+		if bytes.Equal(digest[:n], targetBytes[:n]) {
+			return nonce, nil
+		}
+	}
+
+	return 0, fmt.Errorf("no solution found after 10M attempts")
+}
+
 func (s *Solver) solveAll(pairs []challengePair) ([]uint64, error) {
-	// Prepare temp directory
-	if s.tempDir == "" {
-		dir, err := os.MkdirTemp("", "monkeycode-captcha")
-		if err != nil {
-			return nil, fmt.Errorf("failed to create temp dir: %w", err)
-		}
-		s.tempDir = dir
-	}
-
-	// Fetch Wasm once
-	wasmPath := filepath.Join(s.tempDir, "cap_wasm_bg.wasm")
-	if _, err := os.Stat(wasmPath); os.IsNotExist(err) {
-		wasmBytes, err := s.fetchWasm()
-		if err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(wasmPath, wasmBytes, 0644); err != nil {
-			return nil, err
-		}
-	}
-
-	// Fetch JS glue code once
-	jsGluePath := filepath.Join(s.tempDir, "cap_wasm.mjs")
-	if _, err := os.Stat(jsGluePath); os.IsNotExist(err) {
-		jsGlueBytes, err := s.fetchWasmJS()
-		if err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(jsGluePath, jsGlueBytes, 0644); err != nil {
-			return nil, err
-		}
-	}
-
-	// Write runner script (solves one pair)
-	runnerJS := `
-import { initSync, solve_pow } from './cap_wasm.mjs';
-import { readFileSync } from 'fs';
-
-const salt = process.argv[2];
-const target = process.argv[3];
-const wasmPath = process.argv[4];
-
-const wasmBytes = readFileSync(wasmPath);
-initSync({ module: wasmBytes });
-
-const result = solve_pow(salt, target);
-console.log(result.toString(16));
-`
-
-	runnerPath := filepath.Join(s.tempDir, "runner.mjs")
-	if err := os.WriteFile(runnerPath, []byte(runnerJS), 0644); err != nil {
-		return nil, err
-	}
-
-	// Solve all challenges with bounded concurrency (use number of workers like the browser)
 	workerCount := 8
 	if len(pairs) < workerCount {
 		workerCount = len(pairs)
@@ -234,16 +214,16 @@ console.log(result.toString(16));
 
 	for i, pair := range pairs {
 		wg.Add(1)
-		sem <- struct{}{} // acquire semaphore
+		sem <- struct{}{}
 		go func(idx int, p challengePair) {
 			defer wg.Done()
-			defer func() { <-sem }() // release semaphore
+			defer func() { <-sem }()
 
-			nonce, err := s.solveOne(runnerPath, p.Salt, p.Target, wasmPath)
+			nonce, err := solvePow(p.Salt, p.Target)
 			solMu.Lock()
 			defer solMu.Unlock()
 			if err != nil {
-				solErr = fmt.Errorf("challenge %d failed: %w", idx+1, err)
+				solErr = fmt.Errorf("challenge %d (salt=%s, target=%s) failed: %w", idx+1, p.Salt, p.Target, err)
 				return
 			}
 			solutions[idx] = nonce
@@ -257,32 +237,6 @@ console.log(result.toString(16));
 	}
 
 	return solutions, nil
-}
-
-func (s *Solver) solveOne(runnerPath, salt, target, wasmPath string) (uint64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "node", runnerPath, salt, target, wasmPath)
-
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
-
-	out, err := cmd.Output()
-	if err != nil {
-		return 0, fmt.Errorf("node failed (stderr: %s): %w", strings.TrimSpace(stderrBuf.String()), err)
-	}
-
-	result := strings.TrimSpace(string(out))
-	if result == "" {
-		return 0, fmt.Errorf("empty result")
-	}
-
-	var nonce uint64
-	if _, err := fmt.Sscanf(result, "%x", &nonce); err != nil {
-		return 0, fmt.Errorf("parse nonce %q: %w", result, err)
-	}
-
-	return nonce, nil
 }
 
 func (s *Solver) redeem(token string, solutions []uint64) (string, error) {
@@ -327,60 +281,4 @@ func (s *Solver) redeem(token string, solutions []uint64) (string, error) {
 
 	log.Printf("Redeem successful, final token: %s", redeemResp.Token)
 	return redeemResp.Token, nil
-}
-
-func (s *Solver) fetchWasm() ([]byte, error) {
-	req, err := http.NewRequest("GET", s.wasmURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/wasm")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("wasm fetch failed with status: %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(data) < 4 || data[0] != 0x00 || data[1] != 0x61 || data[2] != 0x73 || data[3] != 0x6D {
-		return nil, fmt.Errorf("invalid wasm file: magic number mismatch")
-	}
-
-	return data, nil
-}
-
-func (s *Solver) fetchWasmJS() ([]byte, error) {
-	jsURL := s.targetURL + "/captcha/cap_wasm.js"
-	req, err := http.NewRequest("GET", jsURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/javascript")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("wasm JS fetch failed with status: %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	log.Printf("Downloaded JS glue code, size: %d", len(data))
-	return data, nil
 }
