@@ -56,6 +56,7 @@
 - 子任务数：30 个
 - 测试用例数：30 个（全部通过）
 - 提交状态：已推送到 remote，提交者身份已清理为 `upbeat-backbone-bose`
+- 架构更新：已使用真实 captcha 流程（Wasm PoW）替换旧的 challenge 逻辑
 
 ## 依赖关系
 

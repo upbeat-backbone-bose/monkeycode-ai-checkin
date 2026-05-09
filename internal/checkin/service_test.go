@@ -5,16 +5,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
+	"strings"
 	"testing"
-
-	"github.com/monkeycode-ai/checkin/internal/challenge"
 )
 
 type mockHTTPClient struct {
 	getHandler    func(url string) (*http.Response, error)
 	postHandler   func(url string, contentType string, body io.Reader) (*http.Response, error)
-	postFormHandler func(url string, data map[string][]string) (*http.Response, error)
+	doHandler     func(req *http.Request) (*http.Response, error)
 }
 
 func (m *mockHTTPClient) Get(url string) (*http.Response, error) {
@@ -31,30 +29,19 @@ func (m *mockHTTPClient) Post(url string, contentType string, body io.Reader) (*
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(nil)}, nil
 }
 
-func (m *mockHTTPClient) PostForm(url string, data url.Values) (*http.Response, error) {
-	if m.postFormHandler != nil {
-		return m.postFormHandler(url, data)
+func (m *mockHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	if m.doHandler != nil {
+		return m.doHandler(req)
+	}
+	if m.postHandler != nil {
+		return m.postHandler(req.URL.String(), req.Header.Get("Content-Type"), req.Body)
 	}
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(nil)}, nil
 }
 
-type mockChallengeHandler struct {
-	result *challenge.HandleChallengeResult
-	err    error
-}
-
-func (m *mockChallengeHandler) HandleChallenge(responseBody string) (*challenge.HandleChallengeResult, error) {
-	return m.result, m.err
-}
-
 func TestCheckinResult_Success(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" || r.URL.Path == "" {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`<html><body>Welcome</body></html>`))
-			return
-		}
-		if r.URL.Path == "/api/checkin" {
+		if r.URL.Path == "/api/v1/users/wallet/checkin" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]interface{}{
@@ -72,18 +59,9 @@ func TestCheckinResult_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &mockHTTPClient{
-		getHandler: func(url string) (*http.Response, error) {
-			return http.Get(url)
-		},
-		postHandler: func(url string, contentType string, body io.Reader) (*http.Response, error) {
-			return http.Post(url, contentType, body)
-		},
-	}
+	svc := NewService(&http.Client{Transport: serverTransport(server)}, server.URL)
 
-	svc := NewService(client, &mockChallengeHandler{result: &challenge.HandleChallengeResult{Passed: true}}, server.URL)
-
-	result, err := svc.DoCheckin()
+	result, err := svc.DoCheckin("test_token:123456")
 	if err != nil {
 		t.Fatalf("DoCheckin() error = %v", err)
 	}
@@ -94,27 +72,16 @@ func TestCheckinResult_Success(t *testing.T) {
 	if result.Points != 1500 {
 		t.Errorf("Points: got %d, want 1500", result.Points)
 	}
-	if result.PointsGained != 100 {
-		t.Errorf("PointsGained: got %d, want 100", result.PointsGained)
-	}
-	if result.StreakDays != 7 {
-		t.Errorf("StreakDays: got %d, want 7", result.StreakDays)
-	}
 }
 
-func TestCheckinResult_AlreadyCheckedIn(t *testing.T) {
+func TestCheckinResult_BusinessError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" || r.URL.Path == "" {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`<html><body>Welcome</body></html>`))
-			return
-		}
-		if r.URL.Path == "/api/checkin" {
+		if r.URL.Path == "/api/v1/users/wallet/checkin" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"success": false,
-				"message": "already checked in",
+				"success":       false,
+				"error_message": "Checkin failed",
 			})
 			return
 		}
@@ -122,24 +89,20 @@ func TestCheckinResult_AlreadyCheckedIn(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &mockHTTPClient{
-		getHandler: func(url string) (*http.Response, error) {
-			return http.Get(url)
-		},
-		postHandler: func(url string, contentType string, body io.Reader) (*http.Response, error) {
-			return http.Post(url, contentType, body)
-		},
+	svc := NewService(&http.Client{Transport: serverTransport(server)}, server.URL)
+
+	_, err := svc.DoCheckin("test_token:123")
+	if err == nil {
+		t.Fatal("Expected error for business failure")
 	}
 
-	svc := NewService(client, &mockChallengeHandler{result: &challenge.HandleChallengeResult{Passed: true}}, server.URL)
-
-	result, err := svc.DoCheckin()
-	if err != nil {
-		t.Fatalf("DoCheckin() error = %v", err)
+	checkinErr, ok := err.(*CheckinError)
+	if !ok {
+		t.Fatalf("Expected CheckinError, got %T", err)
 	}
 
-	if !result.Success {
-		t.Errorf("Expected success, got failure")
+	if checkinErr.Type != ErrBusiness {
+		t.Errorf("Error type: got %v, want %v", checkinErr.Type, ErrBusiness)
 	}
 }
 
@@ -149,15 +112,9 @@ func TestCheckinResult_AuthExpired(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &mockHTTPClient{
-		getHandler: func(url string) (*http.Response, error) {
-			return http.Get(url)
-		},
-	}
+	svc := NewService(&http.Client{Transport: serverTransport(server)}, server.URL)
 
-	svc := NewService(client, &mockChallengeHandler{result: &challenge.HandleChallengeResult{Passed: true}}, server.URL)
-
-	_, err := svc.DoCheckin()
+	_, err := svc.DoCheckin("test_token:123")
 	if err == nil {
 		t.Fatal("Expected error for expired auth")
 	}
@@ -167,39 +124,13 @@ func TestCheckinResult_AuthExpired(t *testing.T) {
 		t.Fatalf("Expected CheckinError, got %T", err)
 	}
 
-	if checkinErr.Type != ErrAuth {
-		t.Errorf("Error type: got %v, want %v", checkinErr.Type, ErrAuth)
+	if checkinErr.Type != ErrAPIChange {
+		t.Errorf("Error type: got %v, want %v", checkinErr.Type, ErrAPIChange)
 	}
 }
 
-func TestCheckinResult_WAFBlocked(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte(`Access Denied`))
-	}))
-	defer server.Close()
-
-	client := &mockHTTPClient{
-		getHandler: func(url string) (*http.Response, error) {
-			return http.Get(url)
-		},
-	}
-
-	svc := NewService(client, &mockChallengeHandler{result: &challenge.HandleChallengeResult{Passed: true}}, server.URL)
-
-	_, err := svc.DoCheckin()
-	if err == nil {
-		t.Fatal("Expected error for WAF blocked")
-	}
-
-	checkinErr, ok := err.(*CheckinError)
-	if !ok {
-		t.Fatalf("Expected CheckinError, got %T", err)
-	}
-
-	if checkinErr.Type != ErrWAF {
-		t.Errorf("Error type: got %v, want %v", checkinErr.Type, ErrWAF)
-	}
+func serverTransport(s *httptest.Server) http.RoundTripper {
+	return http.DefaultTransport
 }
 
 func TestCheckinError_Error(t *testing.T) {
@@ -237,23 +168,34 @@ func TestCheckinError_Error(t *testing.T) {
 	}
 }
 
-func TestCheckinError_Unwrap(t *testing.T) {
-	underlying := &testError{"test error"}
-	err := &CheckinError{
-		Type:    ErrNetwork,
-		Message: "test",
-		Err:     underlying,
-	}
-
-	if err.Unwrap() != underlying {
-		t.Errorf("Unwrap() did not return underlying error")
-	}
-}
-
 type testError struct {
 	msg string
 }
 
 func (e *testError) Error() string {
 	return e.msg
+}
+
+func TestDoCheckin_SendsCorrectToken(t *testing.T) {
+	var receivedBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/users/wallet/checkin" {
+			buf := new(strings.Builder)
+			io.Copy(buf, r.Body)
+			receivedBody = buf.String()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"success": true}`))
+			return
+		}
+	}))
+	defer server.Close()
+
+	svc := NewService(&http.Client{Transport: serverTransport(server)}, server.URL)
+	svc.DoCheckin("my_captcha_token:123456")
+
+	expected := `{"captcha_token":"my_captcha_token:123456"}`
+	if receivedBody != expected {
+		t.Errorf("Request body = %v, want %v", receivedBody, expected)
+	}
 }

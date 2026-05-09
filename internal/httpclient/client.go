@@ -158,6 +158,14 @@ func (c *Client) Post(url string, contentType string, body io.Reader) (*http.Res
 	})
 }
 
+func (c *Client) Do(req *http.Request) (*http.Response, error) {
+	return c.doWithRetry(req.Method, req.URL.String(), req.Body, func(r *http.Request) {
+		for k, v := range req.Header {
+			r.Header[k] = v
+		}
+	})
+}
+
 func (c *Client) PostForm(url string, data url.Values) (*http.Response, error) {
 	body := bytes.NewBufferString(data.Encode())
 	return c.Post(url, "application/x-www-form-urlencoded", body)
