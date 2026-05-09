@@ -19,61 +19,12 @@ type ChallengeResponse struct {
 	Token     string          `json:"token"`
 }
 
-const solverJS = `const fs = require('fs');
-async function run() {
-    const salt = process.argv[2];
-    const target = process.argv[3];
-    const wasmPath = process.argv[4];
-    const wasmBytes = fs.readFileSync(wasmPath);
-    
-    let exports = null;
-    const imports = {
-        wbg: {
-            __wbindgen_init_externref_table: function() {
-                if (!exports) throw new Error("Instance not ready");
-                const table = exports.__wbindgen_export_0;
-                if (table) {
-                    const t = table.grow(4);
-                    table.set(0, undefined);
-                    table.set(t + 0, undefined);
-                    table.set(t + 1, null);
-                    table.set(t + 2, true);
-                    table.set(t + 3, false);
-                }
-            }
-        }
-    };
-
-    const { instance } = await WebAssembly.instantiate(wasmBytes, imports);
-    exports = instance.exports;
-    if (exports.__wbindgen_start) exports.__wbindgen_start();
-
-    let WASM_VECTOR_LEN = 0;
-    const mem = new Uint8Array(exports.memory.buffer);
-    function passStringToWasm0(str) {
-        const len = str.length;
-        let ptr = exports.__wbindgen_malloc(len, 1);
-        for (let i = 0; i < len; i++) mem[ptr + i] = str.charCodeAt(i);
-        WASM_VECTOR_LEN = len;
-        return ptr;
-    }
-
-    const ptr1 = passStringToWasm0(salt);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passStringToWasm0(target);
-    const len2 = WASM_VECTOR_LEN;
-
-    const res = exports.solve_pow(ptr1, len1, ptr2, len2);
-    console.log(BigInt.asUintN(64, res).toString(16));
-}
-run().catch(e => { console.error(e.message); process.exit(1); });`
-
 type Solver struct {
-	client      HTTPClient
-	targetURL   string
-	wasmURL     string
+	client       HTTPClient
+	targetURL    string
+	wasmURL      string
 	challengeURL string
-	tempDir     string
+	tempDir      string
 }
 
 type HTTPClient interface {
@@ -84,9 +35,9 @@ type HTTPClient interface {
 
 func NewSolver(client HTTPClient, targetURL string) *Solver {
 	return &Solver{
-		client:      client,
-		targetURL:   strings.TrimRight(targetURL, "/"),
-		wasmURL:     targetURL + "/captcha/cap_wasm_bg.wasm",
+		client:       client,
+		targetURL:    strings.TrimRight(targetURL, "/"),
+		wasmURL:      targetURL + "/captcha/cap_wasm_bg.wasm",
 		challengeURL: targetURL + "/api/v1/public/captcha/challenge",
 	}
 }
@@ -214,37 +165,13 @@ run().catch(e => { console.error(e.message); process.exit(1); });
 	return result, nil
 }
 
-func (s *Solver) fetchWasmJS() ([]byte, error) {
-	jsURL := s.targetURL + "/captcha/cap_wasm.js"
-	req, err := http.NewRequest("GET", jsURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Sec-Fetch-Dest", "script")
-	req.Header.Set("Sec-Fetch-Mode", "cors")
-	req.Header.Set("Accept", "*/*")
-
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("wasm JS fetch failed with status: %d", resp.StatusCode)
-	}
-
-	return io.ReadAll(resp.Body)
-}
-
 func (s *Solver) fetchWasm() ([]byte, error) {
 	req, err := http.NewRequest("GET", s.wasmURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Sec-Fetch-Dest", "empty")
-	req.Header.Set("Sec-Fetch-Mode", "cors")
-	req.Header.Set("Accept", "*/*")
+	// Rely on client's automatic decompression (gzip/br)
+	req.Header.Set("Accept", "application/wasm")
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -256,5 +183,43 @@ func (s *Solver) fetchWasm() ([]byte, error) {
 		return nil, fmt.Errorf("wasm fetch failed with status: %d", resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate Wasm magic number
+	if len(data) < 4 || data[0] != 0x00 || data[1] != 0x61 || data[2] != 0x73 || data[3] != 0x6D {
+		return nil, fmt.Errorf("invalid wasm file: magic number mismatch")
+	}
+
+	return data, nil
+}
+
+func (s *Solver) fetchWasmJS() ([]byte, error) {
+	jsURL := s.targetURL + "/captcha/cap_wasm.js"
+	req, err := http.NewRequest("GET", jsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Rely on client's automatic decompression (gzip/br)
+	req.Header.Set("Accept", "application/javascript")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("wasm JS fetch failed with status: %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("Downloaded JS glue code, size: %d, start: %s", len(data), string(data[:min(20, len(data))]))
+	return data, nil
 }

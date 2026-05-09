@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
 )
@@ -298,7 +299,14 @@ type readCloser struct {
 }
 
 func newDecompressReader(resp *http.Response) io.Reader {
-	switch resp.Header.Get("Content-Encoding") {
+	enc := resp.Header.Get("Content-Encoding")
+	if enc == "" {
+		return resp.Body
+	}
+
+	switch enc {
+	case "br":
+		return brotli.NewReader(resp.Body)
 	case "gzip":
 		reader, err := gzip.NewReader(resp.Body)
 		if err != nil {
