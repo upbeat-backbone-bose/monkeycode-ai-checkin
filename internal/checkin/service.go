@@ -94,7 +94,7 @@ func (s *Service) parseCheckinResponse(statusCode int, body []byte) (*CheckinRes
 	if statusCode != http.StatusOK {
 		return nil, &CheckinError{
 			Type:    ErrAPIChange,
-			Message: fmt.Sprintf("unexpected status code: %d", statusCode),
+			Message: fmt.Sprintf("unexpected status code: %d, body: %s", statusCode, string(body)),
 		}
 	}
 
@@ -113,7 +113,7 @@ func (s *Service) parseCheckinResponse(statusCode int, body []byte) (*CheckinRes
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, &CheckinError{
 			Type:    ErrAPIChange,
-			Message: "failed to parse checkin response",
+			Message: fmt.Sprintf("failed to parse checkin response: %s", string(body)),
 			Err:     err,
 		}
 	}
@@ -128,7 +128,7 @@ func (s *Service) parseCheckinResponse(statusCode int, body []byte) (*CheckinRes
 		}
 		return nil, &CheckinError{
 			Type:    ErrBusiness,
-			Message: msg,
+			Message: fmt.Sprintf("%s (response: %s)", msg, string(body)),
 		}
 	}
 
