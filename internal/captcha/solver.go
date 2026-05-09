@@ -157,40 +157,90 @@ func (s *Solver) fetchChallenge() (*ChallengeResponse, error) {
 }
 
 // solvePow finds a nonce such that:
-// SHA-256(salt + nonce_as_decimal_string)[0:n] == targetBytes[0:n]
-// where n = floor(len(target_hex) / 2)
+// SHA-256(salt + nonce_decimal_string) matches target at bit level
 func solvePow(salt, target string) (uint64, error) {
-	n := len(target) / 2
-	if n == 0 {
-		n = 1
-	}
-
-	targetHex := target
-	if len(targetHex)%2 != 0 {
-		targetHex = targetHex[:len(targetHex)-1]
-	}
-	targetBytes, err := hex.DecodeString(targetHex)
-	if err != nil {
-		return 0, fmt.Errorf("decode target %q: %w", target, err)
-	}
+	targetBytes := parseHexTarget(target)
+	targetBits := len(target) * 4
 
 	saltBytes := []byte(salt)
 	hasher := sha256.New()
+	nonceBuf := make([]byte, 20) // u64::MAX has at most 20 digits
 
 	var nonce uint64
 	for nonce = 0; nonce < 10_000_000; nonce++ {
-		combined := append(saltBytes, fmt.Appendf(nil, "%d", nonce)...)
+		nonceLen := writeU64ToBuffer(nonce, nonceBuf)
+		nonceBytes := nonceBuf[:nonceLen]
+
+		combined := append(saltBytes, nonceBytes...)
 
 		hasher.Reset()
 		hasher.Write(combined)
 		digest := hasher.Sum(nil)
 
-		if bytes.Equal(digest[:n], targetBytes[:n]) {
+		if hashMatchesTarget(digest[:], targetBytes, targetBits) {
 			return nonce, nil
 		}
 	}
 
 	return 0, fmt.Errorf("no solution found after 10M attempts")
+}
+
+// parseHexTarget decodes hex string, padding with '0' at end if odd length
+// Matches Rust: if padded_target.len() % 2 != 0 { padded_target.push('0'); }
+func parseHexTarget(target string) []byte {
+	padded := target
+	if len(padded)%2 != 0 {
+		padded += "0"
+	}
+	result := make([]byte, len(padded)/2)
+	for i := 0; i < len(padded); i += 2 {
+		b, _ := hex.DecodeString(padded[i : i+2])
+		result[i/2] = b[0]
+	}
+	return result
+}
+
+// writeU64ToBuffer converts u64 to decimal ASCII string
+// Matches Rust: buffer[i] = (value % 10) as u8 + b'0'
+func writeU64ToBuffer(value uint64, buffer []byte) int {
+	if value == 0 {
+		buffer[0] = '0'
+		return 1
+	}
+
+	len := 0
+	temp := value
+	for temp > 0 {
+		len++
+		temp /= 10
+	}
+
+	for i := len - 1; i >= 0; i-- {
+		buffer[i] = byte(value%10) + '0'
+		value /= 10
+	}
+
+	return len
+}
+
+// hashMatchesTarget compares hash against target at bit level
+// Matches Rust: full_bytes = target_bits / 8, remaining_bits = target_bits % 8
+func hashMatchesTarget(hash, targetBytes []byte, targetBits int) bool {
+	fullBytes := targetBits / 8
+	remainingBits := targetBits % 8
+
+	if !bytes.Equal(hash[:fullBytes], targetBytes[:fullBytes]) {
+		return false
+	}
+
+	if remainingBits > 0 && fullBytes < len(targetBytes) {
+		mask := byte(0xFF << (8 - remainingBits))
+		if (hash[fullBytes] & mask) != (targetBytes[fullBytes] & mask) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (s *Solver) solveAll(pairs []challengePair) ([]uint64, error) {
