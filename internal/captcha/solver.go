@@ -166,7 +166,16 @@ func (s *Solver) solvePoW(salt, target string) (uint64, error) {
 }
 
 func (s *Solver) fetchWasm() ([]byte, error) {
-	resp, err := s.client.Get(s.wasmURL)
+	req, err := http.NewRequest("GET", s.wasmURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Set headers matching browser behavior for WASM fetch to avoid WAF
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +185,17 @@ func (s *Solver) fetchWasm() ([]byte, error) {
 		return nil, fmt.Errorf("wasm fetch failed with status: %d", resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Validate Wasm magic number: \0asm (0x00, 0x61, 0x73, 0x6D)
+	if len(data) < 4 || data[0] != 0x00 || data[1] != 0x61 || data[2] != 0x73 || data[3] != 0x6D {
+		return nil, fmt.Errorf("invalid wasm file: magic number mismatch, got %v", data[:4])
+	}
+
+	return data, nil
 }
 
 // writeStringToMemory allocates memory in Wasm and writes the string, returning (offset, length).
