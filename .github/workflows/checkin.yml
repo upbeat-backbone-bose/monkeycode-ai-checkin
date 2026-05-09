@@ -1,0 +1,55 @@
+name: Monkeycode Checkin
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: 'Enable debug logging'
+        required: false
+        default: 'false'
+
+env:
+  GO_VERSION: '1.25'
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build
+        run: |
+          GOPROXY=https://goproxy.cn,direct go mod download
+          GOPROXY=https://goproxy.cn,direct go build -o checkin ./cmd/checkin/
+
+      - name: Run Checkin
+        env:
+          MONKEYCODE_COOKIE: ${{ secrets.MONKEYCODE_COOKIE }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          TARGET_URL: ${{ vars.TARGET_URL || 'https://monkeycode-ai.com' }}
+        run: |
+          if [ -z "$MONKEYCODE_COOKIE" ]; then
+            echo "::error::MONKEYCODE_COOKIE secret is not set"
+            exit 1
+          fi
+          ./checkin
+
+      - name: Upload Artifact on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkin-logs
+          path: |
+            *.log
+          retention-days: 7
