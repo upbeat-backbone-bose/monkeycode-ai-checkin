@@ -130,7 +130,8 @@ async function run() {
     const wasmPath = process.argv[4];
     
     const wasmBytes = readFileSync(wasmPath);
-    await init(wasmBytes); 
+    // cap_wasm.mjs expects an object parameter, not raw bytes
+    await init({ module_or_path: wasmBytes }); 
     
     const result = solve_pow(salt, target);
     console.log(result.toString(16));
