@@ -12,6 +12,12 @@ import (
 	"github.com/tetratelabs/wazero/api"
 )
 
+type wbgInitExternrefTableFn struct{}
+
+func (wbgInitExternrefTableFn) Call(ctx context.Context, stack []uint64) {
+	// Stubbed out
+}
+
 type Solver struct {
 	client      HTTPClient
 	targetURL   string
@@ -95,7 +101,18 @@ func (s *Solver) solvePoW(salt, target string) (uint64, error) {
 	r := wazero.NewRuntime(ctx)
 	defer r.Close(ctx)
 
-	// 3. Instantiate Module
+	// 3. Instantiate wbg module (required by wasm-bindgen)
+	hostModuleBuilder := r.NewHostModuleBuilder("wbg")
+	hostModuleBuilder.NewFunctionBuilder().
+		WithGoFunction(&wbgInitExternrefTableFn{}, nil, nil).
+		Export("__wbindgen_init_externref_table")
+
+	_, err = hostModuleBuilder.Instantiate(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("wbg instantiate failed: %w", err)
+	}
+
+	// 4. Instantiate Module
 	mod, err := r.Instantiate(ctx, wasmBytes)
 	if err != nil {
 		return 0, fmt.Errorf("wasm instantiate failed: %w", err)
