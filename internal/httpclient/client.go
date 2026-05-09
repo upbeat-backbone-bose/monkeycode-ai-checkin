@@ -3,7 +3,7 @@ package httpclient
 import (
 	"bytes"
 	"compress/gzip"
-	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +14,7 @@ import (
 	"time"
 
 	utls "github.com/refraction-networking/utls"
+	"golang.org/x/net/http2"
 )
 
 const (
@@ -110,14 +111,17 @@ func NewClient(options ...Option) (*Client, error) {
 }
 
 func newUTLSTransport() http.RoundTripper {
-	dialer := &net.Dialer{
-		Timeout:   connectTimeout,
-		KeepAlive: 30 * time.Second,
-	}
-
-	return &http.Transport{
-		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := dialer.DialContext(ctx, network, addr)
+	// We use http2.Transport because uTLS HelloChrome_120 negotiates h2 via ALPN.
+	// The standard http.Transport with ForceAttemptHTTP2 fails to detect h2 
+	// when DialTLSContext is overridden with uTLS, causing HTTP/1.1 requests 
+	// to be sent to an h2 connection, resulting in "malformed HTTP response".
+	return &http2.Transport{
+		DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
+			dialer := &net.Dialer{
+				Timeout:   connectTimeout,
+				KeepAlive: 30 * time.Second,
+			}
+			conn, err := dialer.Dial(network, addr)
 			if err != nil {
 				return nil, err
 			}
@@ -127,24 +131,17 @@ func newUTLSTransport() http.RoundTripper {
 				host = addr
 			}
 
-			config := utls.Config{
+			uconn := utls.UClient(conn, &utls.Config{
 				ServerName:         host,
 				InsecureSkipVerify: false,
-			}
+			}, utls.HelloChrome_120)
 
-			uconn := utls.UClient(conn, &config, utls.HelloChrome_120)
-			if err := uconn.HandshakeContext(ctx); err != nil {
+			if err := uconn.Handshake(); err != nil {
+				conn.Close()
 				return nil, fmt.Errorf("tls handshake failed: %w", err)
 			}
-
 			return uconn, nil
 		},
-		DialContext:           dialer.DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          10,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   connectTimeout,
-		ExpectContinueTimeout: 1 * time.Second,
 	}
 }
 
