@@ -15,8 +15,8 @@ import (
 
 type wbgInitExternrefTableFn struct{}
 
-func (wbgInitExternrefTableFn) Call(ctx context.Context, stack []uint64) {
-	// Stubbed out
+func (f *wbgInitExternrefTableFn) Call(ctx context.Context, mod api.Module, stack []uint64) {
+	log.Println("__wbindgen_init_externref_table called (stubbed)")
 }
 
 type Solver struct {
@@ -106,8 +106,10 @@ func (s *Solver) solvePoW(salt, target string) (uint64, error) {
 
 	// 3. Instantiate wbg module (required by wasm-bindgen)
 	hostModuleBuilder := r.NewHostModuleBuilder("wbg")
+	
+	// __wbindgen_init_externref_table: Initialize the externref table
 	hostModuleBuilder.NewFunctionBuilder().
-		WithGoFunction(&wbgInitExternrefTableFn{}, nil, nil).
+		WithGoModuleFunction(&wbgInitExternrefTableFn{}, nil, nil).
 		Export("__wbindgen_init_externref_table")
 
 	_, err = hostModuleBuilder.Instantiate(ctx)
@@ -205,12 +207,8 @@ func (s *Solver) fetchWasm() ([]byte, error) {
 // writeStringToMemory allocates memory in Wasm and writes the string, returning (offset, length).
 // This mimics the passStringToWasm0 logic roughly, but simplified since wazero handles memory allocation.
 func (s *Solver) writeStringToMemory(mod api.Module, str string) (uint64, uint64, error) {
-	// We need to call __wbindgen_malloc
 	malloc := mod.ExportedFunction("__wbindgen_malloc")
 	if malloc == nil {
-		// Fallback: some wasm modules expose memory directly, but cap_wasm uses malloc
-		// If malloc is missing, we might need to inspect exports more closely.
-		// However, based on the JS, it uses wasm.__wbindgen_malloc
 		return 0, 0, fmt.Errorf("__wbindgen_malloc not found")
 	}
 
@@ -221,7 +219,13 @@ func (s *Solver) writeStringToMemory(mod api.Module, str string) (uint64, uint64
 	if err != nil {
 		return 0, 0, err
 	}
+	
 	ptr := res[0]
+	log.Printf("Allocated memory at %d for string of length %d", ptr, length)
+
+	if ptr == 0 {
+		return 0, 0, fmt.Errorf("malloc returned 0 (allocation failed)")
+	}
 
 	// Write bytes to memory
 	mem := mod.Memory()
