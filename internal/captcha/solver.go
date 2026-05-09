@@ -51,7 +51,7 @@ type ChallengeParams struct {
 
 type RedeemRequest struct {
 	Token     string   `json:"token"`
-	Solutions []string `json:"solutions"`
+	Solutions []uint64 `json:"solutions"`
 }
 
 type RedeemResponse struct {
@@ -159,17 +159,12 @@ func (s *Solver) fetchChallenge() (*ChallengeResponse, error) {
 // solvePow finds a nonce such that:
 // SHA-256(salt + nonce_as_decimal_string)[0:n] == targetBytes[0:n]
 // where n = floor(len(target_hex) / 2)
-//
-// This matches the JS fallback solver in the captcha worker.
 func solvePow(salt, target string) (uint64, error) {
-	// JS uses: const n = Math.floor(target.length / 2)
-	// "ec0" (3 chars) => n = 1 byte; "abcd" (4 chars) => n = 2 bytes
 	n := len(target) / 2
 	if n == 0 {
 		n = 1
 	}
 
-	// Decode target - take first 2*n chars (even length)
 	targetHex := target
 	if len(targetHex)%2 != 0 {
 		targetHex = targetHex[:len(targetHex)-1]
@@ -182,11 +177,9 @@ func solvePow(salt, target string) (uint64, error) {
 	saltBytes := []byte(salt)
 	hasher := sha256.New()
 
-	// Brute-force: try nonce = 0, 1, 2, ...
 	var nonce uint64
 	for nonce = 0; nonce < 10_000_000; nonce++ {
-		nonceStr := fmt.Sprintf("%d", nonce)
-		combined := append(saltBytes, []byte(nonceStr)...)
+		combined := append(saltBytes, fmt.Appendf(nil, "%d", nonce)...)
 
 		hasher.Reset()
 		hasher.Write(combined)
@@ -200,7 +193,7 @@ func solvePow(salt, target string) (uint64, error) {
 	return 0, fmt.Errorf("no solution found after 10M attempts")
 }
 
-func (s *Solver) solveAll(pairs []challengePair) ([]string, error) {
+func (s *Solver) solveAll(pairs []challengePair) ([]uint64, error) {
 	workerCount := 8
 	if len(pairs) < workerCount {
 		workerCount = len(pairs)
@@ -208,7 +201,7 @@ func (s *Solver) solveAll(pairs []challengePair) ([]string, error) {
 
 	sem := make(chan struct{}, workerCount)
 	var wg sync.WaitGroup
-	solutions := make([]string, len(pairs))
+	solutions := make([]uint64, len(pairs))
 	var solErr error
 	var solMu sync.Mutex
 
@@ -226,8 +219,8 @@ func (s *Solver) solveAll(pairs []challengePair) ([]string, error) {
 				solErr = fmt.Errorf("challenge %d (salt=%s, target=%s) failed: %w", idx+1, p.Salt, p.Target, err)
 				return
 			}
-			solutions[idx] = fmt.Sprintf("%x", nonce)
-			log.Printf("Challenge %d/%d solved: nonce=%s", idx+1, len(pairs), solutions[idx])
+			solutions[idx] = nonce
+			log.Printf("Challenge %d/%d solved: nonce=%d", idx+1, len(pairs), nonce)
 		}(i, pair)
 	}
 
@@ -239,7 +232,7 @@ func (s *Solver) solveAll(pairs []challengePair) ([]string, error) {
 	return solutions, nil
 }
 
-func (s *Solver) redeem(token string, solutions []string) (string, error) {
+func (s *Solver) redeem(token string, solutions []uint64) (string, error) {
 	reqBody := RedeemRequest{
 		Token:     token,
 		Solutions: solutions,
