@@ -51,7 +51,7 @@ type ChallengeParams struct {
 
 type RedeemRequest struct {
 	Token     string   `json:"token"`
-	Solutions []uint64 `json:"solutions"`
+	Solutions []string `json:"solutions"`
 }
 
 type RedeemResponse struct {
@@ -200,7 +200,7 @@ func solvePow(salt, target string) (uint64, error) {
 	return 0, fmt.Errorf("no solution found after 10M attempts")
 }
 
-func (s *Solver) solveAll(pairs []challengePair) ([]uint64, error) {
+func (s *Solver) solveAll(pairs []challengePair) ([]string, error) {
 	workerCount := 8
 	if len(pairs) < workerCount {
 		workerCount = len(pairs)
@@ -208,7 +208,7 @@ func (s *Solver) solveAll(pairs []challengePair) ([]uint64, error) {
 
 	sem := make(chan struct{}, workerCount)
 	var wg sync.WaitGroup
-	solutions := make([]uint64, len(pairs))
+	solutions := make([]string, len(pairs))
 	var solErr error
 	var solMu sync.Mutex
 
@@ -226,8 +226,8 @@ func (s *Solver) solveAll(pairs []challengePair) ([]uint64, error) {
 				solErr = fmt.Errorf("challenge %d (salt=%s, target=%s) failed: %w", idx+1, p.Salt, p.Target, err)
 				return
 			}
-			solutions[idx] = nonce
-			log.Printf("Challenge %d/%d solved: nonce=%d", idx+1, len(pairs), nonce)
+			solutions[idx] = fmt.Sprintf("%x", nonce)
+			log.Printf("Challenge %d/%d solved: nonce=%s", idx+1, len(pairs), solutions[idx])
 		}(i, pair)
 	}
 
@@ -239,7 +239,7 @@ func (s *Solver) solveAll(pairs []challengePair) ([]uint64, error) {
 	return solutions, nil
 }
 
-func (s *Solver) redeem(token string, solutions []uint64) (string, error) {
+func (s *Solver) redeem(token string, solutions []string) (string, error) {
 	reqBody := RedeemRequest{
 		Token:     token,
 		Solutions: solutions,
