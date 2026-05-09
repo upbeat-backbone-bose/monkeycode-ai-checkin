@@ -71,7 +71,7 @@ func (s *Solver) fetchChallenge() (*ChallengeResponse, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return nil, fmt.Errorf("challenge request failed with status: %d", resp.StatusCode)
 	}
 
