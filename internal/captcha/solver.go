@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -95,10 +96,12 @@ func (s *Solver) solvePoW(salt, target string) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	log.Printf("Fetched WASM module, size: %d bytes", len(wasmBytes))
 
-	// 2. Setup Runtime
+	// 2. Setup Runtime with Interpreter to avoid wazevo JIT bugs
 	ctx := context.Background()
-	r := wazero.NewRuntime(ctx)
+	cfg := wazero.NewRuntimeConfigInterpreter()
+	r := wazero.NewRuntimeWithConfig(ctx, cfg)
 	defer r.Close(ctx)
 
 	// 3. Instantiate wbg module (required by wasm-bindgen)
@@ -128,7 +131,7 @@ func (s *Solver) solvePoW(salt, target string) (uint64, error) {
 	// 4. Find solve_pow function
 	solvePow := mod.ExportedFunction("solve_pow")
 	if solvePow == nil {
-		return 0, fmt.Errorf("function solve_pow not found in wasm module")
+		return 0, fmt.Errorf("function solve_pow not found in wasm module exports")
 	}
 
 	// 5. Prepare arguments
@@ -191,8 +194,9 @@ func (s *Solver) fetchWasm() ([]byte, error) {
 	}
 
 	// Validate Wasm magic number: \0asm (0x00, 0x61, 0x73, 0x6D)
-	if len(data) < 4 || data[0] != 0x00 || data[1] != 0x61 || data[2] != 0x73 || data[3] != 0x6D {
-		return nil, fmt.Errorf("invalid wasm file: magic number mismatch, got %v", data[:4])
+	// A valid Wasm file must be at least 8 bytes (4 magic + 4 version)
+	if len(data) < 8 || data[0] != 0x00 || data[1] != 0x61 || data[2] != 0x73 || data[3] != 0x6D {
+		return nil, fmt.Errorf("invalid wasm file: magic number mismatch, got %v", data[:min(len(data), 4)])
 	}
 
 	return data, nil
