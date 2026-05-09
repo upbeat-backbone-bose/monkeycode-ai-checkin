@@ -156,15 +156,46 @@ func (s *Solver) solvePoWWithNode(salt, target string) (string, error) {
 		}
 	}
 
-	// Write JS solver
-	jsPath := filepath.Join(s.tempDir, "solver.js")
-	if err := os.WriteFile(jsPath, []byte(solverJS), 0644); err != nil {
+	// Fetch JS glue code
+	jsGluePath := filepath.Join(s.tempDir, "cap_wasm.js")
+	if _, err := os.Stat(jsGluePath); os.IsNotExist(err) {
+		jsGlueBytes, err := s.fetchWasmJS()
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(jsGluePath, jsGlueBytes, 0644); err != nil {
+			return "", err
+		}
+	}
+
+	// Write runner script
+	runnerJS := fmt.Sprintf(`
+import init, { solve_pow } from './%s';
+import { readFileSync } from 'fs';
+
+async function run() {
+    const salt = process.argv[2];
+    const target = process.argv[3];
+    const wasmPath = process.argv[4];
+    
+    const wasmBytes = readFileSync(wasmPath);
+    await init(wasmBytes); 
+    
+    const result = solve_pow(salt, target);
+    console.log(result.toString(16));
+}
+run().catch(e => { console.error(e.message); process.exit(1); });
+`, filepath.Base(jsGluePath))
+
+	runnerPath := filepath.Join(s.tempDir, "runner.mjs")
+	if err := os.WriteFile(runnerPath, []byte(runnerJS), 0644); err != nil {
 		return "", err
 	}
 
 	// Execute Node.js
 	ctx := context.Background()
-	cmd := exec.CommandContext(ctx, "node", jsPath, salt, target, wasmPath)
+	cmd := exec.CommandContext(ctx, "node", runnerPath, salt, target, wasmPath)
+	cmd.Stderr = os.Stderr // Print stderr for debugging if it fails
 	
 	out, err := cmd.Output()
 	if err != nil {
@@ -181,6 +212,29 @@ func (s *Solver) solvePoWWithNode(salt, target string) (string, error) {
 
 	log.Printf("PoW solved successfully, result: %s", result)
 	return result, nil
+}
+
+func (s *Solver) fetchWasmJS() ([]byte, error) {
+	jsURL := s.targetURL + "/captcha/cap_wasm.js"
+	req, err := http.NewRequest("GET", jsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Sec-Fetch-Dest", "script")
+	req.Header.Set("Sec-Fetch-Mode", "cors")
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("wasm JS fetch failed with status: %d", resp.StatusCode)
+	}
+
+	return io.ReadAll(resp.Body)
 }
 
 func (s *Solver) fetchWasm() ([]byte, error) {
