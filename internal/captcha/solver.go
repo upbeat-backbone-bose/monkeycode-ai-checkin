@@ -260,14 +260,16 @@ console.log(result.toString(16));
 }
 
 func (s *Solver) solveOne(runnerPath, salt, target, wasmPath string) (uint64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30)
+	ctx, cancel := context.WithTimeout(context.Background(), 60)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "node", runnerPath, salt, target, wasmPath)
-	cmd.Stderr = os.Stderr
+
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
 
 	out, err := cmd.Output()
 	if err != nil {
-		return 0, fmt.Errorf("node failed: %w", err)
+		return 0, fmt.Errorf("node failed (stderr: %s): %w", strings.TrimSpace(stderrBuf.String()), err)
 	}
 
 	result := strings.TrimSpace(string(out))
