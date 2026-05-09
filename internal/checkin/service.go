@@ -94,12 +94,12 @@ func (s *Service) parseCheckinResponse(statusCode int, body []byte) (*CheckinRes
 	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
 		return nil, &CheckinError{
 			Type:    ErrAPIChange,
-			Message: fmt.Sprintf("unexpected status code: %d, body: %s", statusCode, string(body)),
+			Message: fmt.Sprintf("unexpected status code: %d", statusCode),
 		}
 	}
 
 	var response struct {
-		Success      bool   `json:"success"`
+		Success      *bool  `json:"success"`
 		Message      string `json:"message"`
 		Data         *struct {
 			Points       int  `json:"points"`
@@ -114,13 +114,18 @@ func (s *Service) parseCheckinResponse(statusCode int, body []byte) (*CheckinRes
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, &CheckinError{
 			Type:    ErrAPIChange,
-			Message: fmt.Sprintf("failed to parse checkin response: %s", string(body)),
+			Message: "failed to parse checkin response",
 			Err:     err,
 		}
 	}
 
-	// Check success: either boolean success field or code == 0
-	isSuccess := response.Success || response.Code == 0
+	// Check success: explicit true/false, or fallback to code == 0 when field is absent
+	var isSuccess bool
+	if response.Success != nil {
+		isSuccess = *response.Success
+	} else {
+		isSuccess = response.Code == 0
+	}
 
 	if !isSuccess {
 		msg := response.Message
@@ -132,7 +137,7 @@ func (s *Service) parseCheckinResponse(statusCode int, body []byte) (*CheckinRes
 		}
 		return nil, &CheckinError{
 			Type:    ErrBusiness,
-			Message: fmt.Sprintf("%s (response: %s)", msg, string(body)),
+			Message: msg,
 		}
 	}
 
@@ -140,6 +145,10 @@ func (s *Service) parseCheckinResponse(statusCode int, body []byte) (*CheckinRes
 		Success:   true,
 		Message:   "checkin successful",
 		Timestamp: time.Now(),
+	}
+
+	if response.Success != nil && *response.Success {
+		result.Success = true
 	}
 
 	if response.Data != nil {

@@ -57,6 +57,7 @@ type RedeemRequest struct {
 type RedeemResponse struct {
 	Success bool   `json:"success"`
 	Token   string `json:"token"`
+	Message string `json:"message"`
 }
 
 type challengePair struct {
@@ -150,7 +151,7 @@ func (s *Solver) fetchChallenge() (*ChallengeResponse, error) {
 
 	var result ChallengeResponse
 	if err := json.Unmarshal(bodyBytes, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse challenge: %s: %w", string(bodyBytes), err)
+		return nil, fmt.Errorf("failed to parse challenge response: %w", err)
 	}
 
 	return &result, nil
@@ -266,7 +267,7 @@ func (s *Solver) solveAll(pairs []challengePair) ([]uint64, error) {
 			solMu.Lock()
 			defer solMu.Unlock()
 			if err != nil {
-				solErr = fmt.Errorf("challenge %d (salt=%s, target=%s) failed: %w", idx+1, p.Salt, p.Target, err)
+				solErr = fmt.Errorf("challenge %d failed: %w", idx+1, err)
 				return
 			}
 			solutions[idx] = nonce
@@ -292,8 +293,6 @@ func (s *Solver) redeem(token string, solutions []uint64) (string, error) {
 		return "", err
 	}
 
-	log.Printf("Redeem request body: %s", string(bodyBytes))
-
 	req, err := http.NewRequest("POST", s.redeemURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", err
@@ -311,10 +310,8 @@ func (s *Solver) redeem(token string, solutions []uint64) (string, error) {
 		return "", fmt.Errorf("failed to read redeem response: %w", err)
 	}
 
-	log.Printf("Redeem response: status=%d, body=%s", resp.StatusCode, string(respBody))
-
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("redeem failed with status %d: %s", resp.StatusCode, string(respBody))
+		return "", fmt.Errorf("redeem failed with status %d", resp.StatusCode)
 	}
 
 	var redeemResp RedeemResponse
@@ -323,9 +320,9 @@ func (s *Solver) redeem(token string, solutions []uint64) (string, error) {
 	}
 
 	if !redeemResp.Success {
-		return "", fmt.Errorf("redeem unsuccessful: %s", string(respBody))
+		return "", fmt.Errorf("redeem unsuccessful: %s", redeemResp.Message)
 	}
 
-	log.Printf("Redeem successful, final token: %s", redeemResp.Token)
+	log.Printf("Captcha solved successfully")
 	return redeemResp.Token, nil
 }
