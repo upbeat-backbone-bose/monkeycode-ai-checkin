@@ -30,8 +30,8 @@ jobs:
 
       - name: Build
         run: |
-          GOPROXY=https://goproxy.cn,direct go mod download
-          GOPROXY=https://goproxy.cn,direct go build -o checkin ./cmd/checkin/
+          go mod download
+          go build -o checkin ./cmd/checkin/
 
       - name: Run Checkin
         env:
