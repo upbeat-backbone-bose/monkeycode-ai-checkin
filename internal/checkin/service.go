@@ -91,7 +91,7 @@ func (s *Service) DoCheckin(captchaToken string) (*CheckinResult, error) {
 }
 
 func (s *Service) parseCheckinResponse(statusCode int, body []byte) (*CheckinResult, error) {
-	if statusCode != http.StatusOK {
+	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
 		return nil, &CheckinError{
 			Type:    ErrAPIChange,
 			Message: fmt.Sprintf("unexpected status code: %d, body: %s", statusCode, string(body)),
@@ -102,9 +102,10 @@ func (s *Service) parseCheckinResponse(statusCode int, body []byte) (*CheckinRes
 		Success      bool   `json:"success"`
 		Message      string `json:"message"`
 		Data         *struct {
-			Points       int `json:"points"`
-			PointsGained int `json:"points_gained"`
-			StreakDays   int `json:"streak_days"`
+			Points       int  `json:"points"`
+			PointsGained int  `json:"points_gained"`
+			StreakDays   int  `json:"streak_days"`
+			CheckedIn    bool `json:"checked_in"`
 		} `json:"data"`
 		Code         int    `json:"code"`
 		ErrorMessage string `json:"error_message"`
@@ -118,7 +119,10 @@ func (s *Service) parseCheckinResponse(statusCode int, body []byte) (*CheckinRes
 		}
 	}
 
-	if !response.Success {
+	// Check success: either boolean success field or code == 0
+	isSuccess := response.Success || response.Code == 0
+
+	if !isSuccess {
 		msg := response.Message
 		if msg == "" {
 			msg = response.ErrorMessage
