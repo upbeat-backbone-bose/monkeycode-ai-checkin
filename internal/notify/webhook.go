@@ -19,6 +19,10 @@ const (
 
 const defaultTimeout = 10 * time.Second
 
+func Now() time.Time {
+	return time.Now()
+}
+
 type Message struct {
 	Title       string
 	ErrorType   string

@@ -2,6 +2,7 @@ package checkin
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +37,18 @@ func (e *CheckinError) Error() string {
 
 func (e *CheckinError) Unwrap() error {
 	return e.Err
+}
+
+func AsCheckinError(err error, target **CheckinError) bool {
+	if err == nil || target == nil {
+		return false
+	}
+	var checkinErr *CheckinError
+	if ok := errors.As(err, &checkinErr); ok {
+		*target = checkinErr
+		return true
+	}
+	return false
 }
 
 type CheckinResult struct {
