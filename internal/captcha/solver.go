@@ -157,7 +157,7 @@ func (s *Solver) solvePoWWithNode(salt, target string) (string, error) {
 	}
 
 	// Fetch JS glue code
-	jsGluePath := filepath.Join(s.tempDir, "cap_wasm.js")
+	jsGluePath := filepath.Join(s.tempDir, "cap_wasm.mjs")
 	if _, err := os.Stat(jsGluePath); os.IsNotExist(err) {
 		jsGlueBytes, err := s.fetchWasmJS()
 		if err != nil {
@@ -169,8 +169,8 @@ func (s *Solver) solvePoWWithNode(salt, target string) (string, error) {
 	}
 
 	// Write runner script
-	runnerJS := fmt.Sprintf(`
-import init, { solve_pow } from './%s';
+	runnerJS := `
+import init, { solve_pow } from './cap_wasm.mjs';
 import { readFileSync } from 'fs';
 
 async function run() {
@@ -185,7 +185,7 @@ async function run() {
     console.log(result.toString(16));
 }
 run().catch(e => { console.error(e.message); process.exit(1); });
-`, filepath.Base(jsGluePath))
+`
 
 	runnerPath := filepath.Join(s.tempDir, "runner.mjs")
 	if err := os.WriteFile(runnerPath, []byte(runnerJS), 0644); err != nil {
