@@ -78,7 +78,13 @@ func (s *Solver) fetchChallenge() (*ChallengeResponse, error) {
 	}
 
 	var result ChallengeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read challenge body: %w", err)
+	}
+	log.Printf("Challenge response body: %s", string(bodyBytes))
+
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		return nil, err
 	}
 
@@ -129,7 +135,14 @@ function run() {
     const target = process.argv[3];
     const wasmPath = process.argv[4];
     
+    // Debug: print salt and target
+    console.error("DEBUG salt:", salt);
+    console.error("DEBUG target:", target);
+    console.error("DEBUG salt.length:", salt.length);
+    console.error("DEBUG target.length:", target.length);
+    
     const wasmBytes = readFileSync(wasmPath);
+    console.error("DEBUG wasm bytes:", wasmBytes.length);
     
     try {
         // Use synchronous initialization for reliability
