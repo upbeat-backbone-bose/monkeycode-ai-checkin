@@ -249,6 +249,8 @@ func (s *Solver) redeem(token string, solutions []uint64) (string, error) {
 		return "", err
 	}
 
+	log.Printf("Redeem request body: %s", string(bodyBytes))
+
 	req, err := http.NewRequest("POST", s.redeemURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return "", err
@@ -265,6 +267,8 @@ func (s *Solver) redeem(token string, solutions []uint64) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to read redeem response: %w", err)
 	}
+
+	log.Printf("Redeem response: status=%d, body=%s", resp.StatusCode, string(respBody))
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("redeem failed with status %d: %s", resp.StatusCode, string(respBody))
